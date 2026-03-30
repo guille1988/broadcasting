@@ -1,0 +1,81 @@
+package config
+
+import (
+	"broadcasting/internal/infrastructure/env"
+
+	"github.com/joho/godotenv"
+)
+
+// Config represents the application configuration.
+type Config struct {
+	App      AppConfig
+	Log      LogConfig
+	RabbitMQ RabbitMQConfig
+}
+
+// AppConfig represents the application configuration.
+type AppConfig struct {
+	Name string
+	Env  Env
+}
+
+type RabbitMQConfig struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+}
+
+type LogConfig struct {
+	Driver LogDriver
+	Path   string
+	Level  LogLevel
+}
+
+type Env string
+
+const (
+	LocalEnv      Env = "local"
+	TestingEnv    Env = "testing"
+	StagingEnv    Env = "staging"
+	ProductionEnv Env = "production"
+)
+
+type LogLevel string
+
+const (
+	DebugLevel LogLevel = "debug"
+	InfoLevel  LogLevel = "info"
+	WarnLevel  LogLevel = "warn"
+	ErrorLevel LogLevel = "error"
+)
+
+type LogDriver string
+
+const (
+	StdoutFormat LogDriver = "stdout"
+	File         LogDriver = "file"
+)
+
+// New creates a new configuration instance.
+func New() (*Config, error) {
+	_ = godotenv.Load()
+
+	return &Config{
+		App: AppConfig{
+			Name: env.GetEnvAsString("APP_NAME", "broadcasting"),
+			Env:  Env(env.GetEnvAsString("APP_ENV", string(LocalEnv))),
+		},
+		Log: LogConfig{
+			Driver: LogDriver(env.GetEnvAsString("LOG_DRIVER", string(StdoutFormat))),
+			Path:   env.GetEnvAsString("LOG_PATH", "logs/broadcasting.log"),
+			Level:  LogLevel(env.GetEnvAsString("LOG_LEVEL", string(InfoLevel))),
+		},
+		RabbitMQ: RabbitMQConfig{
+			Host:     env.GetEnvAsString("RABBITMQ_HOST", "rabbitmq"),
+			Port:     env.GetEnvAsString("RABBITMQ_PORT", "5672"),
+			User:     env.GetEnvAsString("RABBITMQ_USER", "guest"),
+			Password: env.GetEnvAsString("RABBITMQ_PASSWORD", "guest"),
+		},
+	}, nil
+}
