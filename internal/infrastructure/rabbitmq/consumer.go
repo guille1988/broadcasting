@@ -1,10 +1,11 @@
 package rabbitmq
 
 import (
-	"context"
 	"broadcasting/internal/infrastructure/config"
+	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -24,10 +25,26 @@ type Consumer struct {
 func NewConsumer(cfg config.RabbitMQConfig) (*Consumer, error) {
 	url := fmt.Sprintf("amqp://%s:%s@%s:%s/", cfg.User, cfg.Password, cfg.Host, cfg.Port)
 
-	connection, err := amqp.Dial(url)
+	const maxRetries = 5
+	backoff := 2 * time.Second
+
+	var connection *amqp.Connection
+	var err error
+
+	for i := 1; i <= maxRetries; i++ {
+		connection, err = amqp.Dial(url)
+
+		if err == nil {
+			break
+		}
+
+		slog.Warn("failed to connect to RabbitMQ, retrying...", "attempt", i, "error", err)
+		time.Sleep(backoff)
+		backoff *= 2
+	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
+		return nil, fmt.Errorf("failed to connect to RabbitMQ after %d attempts: %w", maxRetries, err)
 	}
 
 	var channel *amqp.Channel
