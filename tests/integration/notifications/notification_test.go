@@ -20,10 +20,11 @@ func TestNotificationModule(test *testing.T) {
 	integration.TestCase(test, "it should broadcast a login notification to all connected websocket clients", func(test *testing.T) {
 		name := "Alice"
 		email := "alice@example.com"
-		wsURL := "ws" + strings.TrimPrefix(integration.TestServer.URL, "http")
+		userUUID := "test-user-uuid"
+		wsURL := "ws" + strings.TrimPrefix(integration.TestServer.URL, "http") + "/ws/" + userUUID
 
 		headers := http.Header{}
-		headers.Set("X-User-UUID", "test-user-uuid")
+		headers.Set("X-User-UUID", userUUID)
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
 		assert.NoError(test, err)
 

@@ -67,7 +67,7 @@ func RunConsumer(appInstance *app.App) error {
 	}
 
 	// Serve WebSocket connections on /ws alongside the RabbitMQ consumer.
-	http.HandleFunc("/ws", appInstance.Container.Hub.ServeWS)
+	http.HandleFunc("/ws/", appInstance.Container.Hub.ServeWS)
 
 	go func() {
 		slog.Info("websocket server starting", "addr", ":8080")

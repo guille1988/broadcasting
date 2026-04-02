@@ -3,6 +3,7 @@ package websocket
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
@@ -99,9 +100,22 @@ func (hub *Hub) Broadcast(message []byte) {
 // and starts the read and write pumps in separate goroutines.
 // It expects the X-User-UUID header to be set by the API gateway (Traefik).
 func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
-	userUUID := request.Header.Get("X-User-UUID")
-	if userUUID == "" {
+	headerUUID := request.Header.Get("X-User-UUID")
+
+	if headerUUID == "" {
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	pathUUID := strings.TrimPrefix(request.URL.Path, "/ws/")
+
+	if pathUUID == "" {
+		http.Error(writer, "missing user uuid", http.StatusBadRequest)
+		return
+	}
+
+	if pathUUID != headerUUID {
+		http.Error(writer, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -112,7 +126,7 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	client := &Client{conn: conn, send: make(chan []byte, 256), userUUID: userUUID}
+	client := &Client{conn: conn, send: make(chan []byte, 256), userUUID: headerUUID}
 	hub.register <- client
 
 	// Write pump: forwards messages from the channel to the connection.
