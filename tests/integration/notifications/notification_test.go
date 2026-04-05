@@ -3,7 +3,6 @@ package notifications
 import (
 	"broadcasting/internal/domain/notification/actions"
 	"broadcasting/internal/domain/notification/handlers"
-	"broadcasting/internal/shared/messaging/rabbitmq/dtos"
 	"broadcasting/tests/integration"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/guille1988/go-app-shared/messaging/rabbitmq/dtos"
 
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"

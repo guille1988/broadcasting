@@ -1,0 +1,3 @@
+[submodule "internal/shared"]
+	path = internal/shared
+	url = git@github.com:guille1988/go-app-shared.git

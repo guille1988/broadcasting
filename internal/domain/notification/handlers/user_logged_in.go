@@ -2,9 +2,10 @@ package handlers
 
 import (
 	"broadcasting/internal/domain/notification/actions"
-	"broadcasting/internal/shared/messaging/rabbitmq/dtos"
 	"encoding/json"
 	"fmt"
+
+	"github.com/guille1988/go-app-shared/messaging/rabbitmq/dtos"
 )
 
 // UserLoggedIn handles the user.logged_in RabbitMQ event.
