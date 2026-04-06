@@ -17,6 +17,8 @@ type Config struct {
 type AppConfig struct {
 	Name string
 	Env  Env
+	Host string
+	Port string
 }
 
 type RabbitMQConfig struct {
@@ -65,6 +67,8 @@ func New() (*Config, error) {
 		App: AppConfig{
 			Name: env.GetEnvAsString("APP_NAME", "broadcasting"),
 			Env:  Env(env.GetEnvAsString("APP_ENV", string(LocalEnv))),
+			Host: env.GetEnvAsString("APP_HOST", ""),
+			Port: env.GetEnvAsString("APP_PORT", "8080"),
 		},
 		Log: LogConfig{
 			Driver: LogDriver(env.GetEnvAsString("LOG_DRIVER", string(StdoutFormat))),

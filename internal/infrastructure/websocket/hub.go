@@ -107,7 +107,8 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	pathUUID := strings.TrimPrefix(request.URL.Path, "/ws/")
+	parts := strings.Split(strings.TrimSuffix(request.URL.Path, "/"), "/")
+	pathUUID := parts[len(parts)-1]
 
 	if pathUUID == "" {
 		http.Error(writer, "missing user uuid", http.StatusBadRequest)

@@ -11,6 +11,7 @@ import (
 )
 
 var TestApp *app.App
+var TestHandler http.Handler
 var TestConfig *config.Config
 var TestServer *httptest.Server
 
@@ -28,12 +29,20 @@ func RunTests(test *testing.M) {
 		panic(err)
 	}
 
-	// Start an in-process HTTP server that upgrades connections to WebSocket.
-	TestServer = httptest.NewServer(http.HandlerFunc(TestApp.Container.Hub.ServeWS))
+	TestHandler = bootstrap.NewTestingHandler(TestApp)
+	TestServer = httptest.NewServer(TestHandler)
 	defer TestServer.Close()
 
 	code := test.Run()
 	os.Exit(code)
+}
+
+// ExecuteRequest performs an HTTP request against the global test handler and returns the response recorder.
+func ExecuteRequest(request *http.Request) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	TestHandler.ServeHTTP(recorder, request)
+
+	return recorder
 }
 
 // TestCase is a helper that runs the given function as a named sub-test.

@@ -22,7 +22,7 @@ func TestNotificationModule(test *testing.T) {
 		name := "Alice"
 		email := "alice@example.com"
 		userUUID := "test-user-uuid"
-		wsURL := "ws" + strings.TrimPrefix(integration.TestServer.URL, "http") + "/ws/" + userUUID
+		wsURL := "ws" + strings.TrimPrefix(integration.TestServer.URL, "http") + "/api/ws/" + userUUID
 
 		headers := http.Header{}
 		headers.Set("X-User-UUID", userUUID)
