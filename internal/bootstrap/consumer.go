@@ -10,6 +10,8 @@ import (
 	"broadcasting/internal/infrastructure/providers/messaging"
 	"context"
 	"log/slog"
+
+	"github.com/guille1988/go-app-shared/messaging/rabbitmq/constants"
 )
 
 // NewConsumer initializes the app instance with all necessary configuration.
@@ -53,9 +55,9 @@ func RunConsumer(appInstance *app.App) error {
 
 	err := provider.Register(
 		"broadcasting.service",
-		"auth.events",
-		"topic",
-		"user.logged_in",
+		constants.ExchangeAuthEvents,
+		constants.ExchangeTypeTopic,
+		constants.RouteUserLoggedIn,
 		handlers.NewUserLoggedIn(broadcastLoginAction),
 	)
 
