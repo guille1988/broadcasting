@@ -65,6 +65,12 @@ func NewConsumer(cfg config.RabbitMQConfig) (*Consumer, error) {
 		return nil, fmt.Errorf("failed to open a channel: %w", err)
 	}
 
+	err = channel.Qos(cfg.PrefetchCount, 0, false)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to set QoS: %w", err)
+	}
+
 	ok = true
 
 	return &Consumer{
