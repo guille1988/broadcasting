@@ -11,7 +11,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/guille1988/go-app-shared/messaging/rabbitmq/constants"
+	"github.com/guille1988/go-app-shared/messaging/kafka/constants"
 )
 
 // NewConsumer initializes the app instance with all necessary configuration.
@@ -41,13 +41,13 @@ func RunConsumer(appInstance *app.App) error {
 
 	broadcastLoginAction := actions.NewBroadcastLogin(appInstance.Container.Hub)
 
-	provider := messaging.NewRabbitMQRegister(appInstance.Config.RabbitMQ)
+	provider := messaging.NewKafkaConsumer(appInstance.Config.Kafka.Brokers)
 
 	appInstance.AddCloser(func() error {
 		err := provider.Close()
 
 		if err != nil {
-			slog.Error("failed to close rabbitmq provider", "error", err)
+			slog.Error("failed to close Kafka provider", "error", err)
 		}
 
 		return nil
@@ -55,8 +55,8 @@ func RunConsumer(appInstance *app.App) error {
 
 	err := provider.Register(
 		"broadcasting.service",
-		constants.ExchangeAuthEvents,
-		constants.ExchangeTypeTopic,
+		"",
+		"",
 		constants.RouteUserLoggedIn,
 		handlers.NewUserLoggedIn(broadcastLoginAction),
 	)
