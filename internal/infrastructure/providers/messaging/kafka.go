@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -17,14 +18,18 @@ type topicEntry struct {
 }
 
 type KafkaConsumer struct {
-	brokers []string
-	groupID string
-	entries []topicEntry
-	client  *kgo.Client
+	brokers          []string
+	groupID          string
+	entries          []topicEntry
+	client           *kgo.Client
+	rebalanceTimeout time.Duration
 }
 
-func NewKafkaConsumer(brokers string) *KafkaConsumer {
-	return &KafkaConsumer{brokers: []string{brokers}}
+func NewKafkaConsumer(brokers string, rebalanceTimeoutMs int) *KafkaConsumer {
+	return &KafkaConsumer{
+		brokers:          []string{brokers},
+		rebalanceTimeout: time.Duration(rebalanceTimeoutMs) * time.Millisecond,
+	}
 }
 
 func (consumer *KafkaConsumer) Register(queue, _, _, routingKey string, handler MessageHandler) error {
@@ -47,6 +52,10 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 		kgo.ConsumerGroup(consumer.groupID),
 		kgo.ConsumeTopics(topics...),
 		kgo.AllowAutoTopicCreation(),
+		kgo.DisableAutoCommit(),
+		kgo.BlockRebalanceOnPoll(),
+		kgo.RebalanceTimeout(consumer.rebalanceTimeout),
+		kgo.Balancers(kgo.CooperativeStickyBalancer()),
 	)
 	if err != nil {
 		return err
@@ -86,6 +95,12 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 					}
 				}
 			})
+
+			err = consumer.client.CommitUncommittedOffsets(ctx)
+
+			if err != nil {
+				slog.Error("failed to commit offsets", "error", err)
+			}
 		}
 	}()
 

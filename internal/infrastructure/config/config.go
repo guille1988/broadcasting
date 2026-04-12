@@ -22,7 +22,8 @@ type AppConfig struct {
 }
 
 type KafkaConfig struct {
-	Brokers string
+	Brokers            string
+	RebalanceTimeoutMs int
 }
 
 type LogConfig struct {
@@ -73,7 +74,8 @@ func New() (*Config, error) {
 			Level:  LogLevel(env.GetEnvAsString("LOG_LEVEL", string(InfoLevel))),
 		},
 		Kafka: KafkaConfig{
-			Brokers: env.GetEnvAsString("KAFKA_BROKERS", "kafka:9092"),
+			Brokers:            env.GetEnvAsString("KAFKA_BROKERS", "kafka:9092"),
+			RebalanceTimeoutMs: env.GetEnvAsInt("KAFKA_REBALANCE_TIMEOUT_MS", 600000),
 		},
 	}, nil
 }
