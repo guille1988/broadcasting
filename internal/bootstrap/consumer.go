@@ -41,7 +41,11 @@ func RunConsumer(appInstance *app.App) error {
 
 	broadcastLoginAction := actions.NewBroadcastLogin(appInstance.Container.Hub)
 
-	provider := messaging.NewKafkaConsumer(appInstance.Config.Kafka.Brokers, appInstance.Config.Kafka.RebalanceTimeoutMs)
+	provider := messaging.NewKafkaConsumer(
+		appInstance.Config.Kafka.Brokers,
+		appInstance.Config.Kafka.RebalanceTimeoutMs,
+		appInstance.Config.Kafka.WorkerPoolSize,
+	)
 
 	appInstance.AddCloser(func() error {
 		err := provider.Close()

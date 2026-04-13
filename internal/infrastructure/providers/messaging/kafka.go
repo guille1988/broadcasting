@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -23,12 +24,14 @@ type KafkaConsumer struct {
 	entries          []topicEntry
 	client           *kgo.Client
 	rebalanceTimeout time.Duration
+	workerPoolSize   int
 }
 
-func NewKafkaConsumer(brokers string, rebalanceTimeoutMs int) *KafkaConsumer {
+func NewKafkaConsumer(brokers string, rebalanceTimeoutMs int, workerPoolSize int) *KafkaConsumer {
 	return &KafkaConsumer{
 		brokers:          []string{brokers},
 		rebalanceTimeout: time.Duration(rebalanceTimeoutMs) * time.Millisecond,
+		workerPoolSize:   workerPoolSize,
 	}
 }
 
@@ -85,16 +88,29 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 				continue
 			}
 
-			fetches.EachRecord(func(record *kgo.Record) {
-				slog.Info("message received from kafka", "topic", record.Topic)
-				if handler, ok := handlers[record.Topic]; ok {
-					err = handler.Handle(record.Value)
+			sem := make(chan struct{}, consumer.workerPoolSize)
+			var waitGroup sync.WaitGroup
 
-					if err != nil {
-						slog.Error("handler error", "error", err)
+			fetches.EachRecord(func(record *kgo.Record) {
+				waitGroup.Add(1)
+				sem <- struct{}{}
+
+				go func(rec *kgo.Record) {
+					defer waitGroup.Done()
+					defer func() { <-sem }()
+
+					slog.Info("message received from kafka", "topic", rec.Topic)
+
+					if handler, ok := handlers[rec.Topic]; ok {
+						err = handler.Handle(rec.Value)
+
+						if err != nil {
+							slog.Error("handler error", "error", err)
+						}
 					}
-				}
+				}(record)
 			})
+			waitGroup.Wait()
 
 			err = consumer.client.CommitUncommittedOffsets(ctx)
 
