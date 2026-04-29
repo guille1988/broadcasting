@@ -8,9 +8,9 @@ import (
 
 // Config represents the application configuration.
 type Config struct {
-	App      AppConfig
-	Log      LogConfig
-	RabbitMQ RabbitMQConfig
+	App   AppConfig
+	Log   LogConfig
+	Kafka KafkaConfig
 }
 
 // AppConfig represents the application configuration.
@@ -21,12 +21,10 @@ type AppConfig struct {
 	Port string
 }
 
-type RabbitMQConfig struct {
-	Host          string
-	Port          string
-	User          string
-	Password      string
-	PrefetchCount int
+type KafkaConfig struct {
+	Brokers            string
+	RebalanceTimeoutMs int
+	WorkerPoolSize     int
 }
 
 type LogConfig struct {
@@ -76,12 +74,10 @@ func New() (*Config, error) {
 			Path:   env.GetEnvAsString("LOG_PATH", "logs/broadcasting.log"),
 			Level:  LogLevel(env.GetEnvAsString("LOG_LEVEL", string(InfoLevel))),
 		},
-		RabbitMQ: RabbitMQConfig{
-			Host:          env.GetEnvAsString("RABBITMQ_HOST", "rabbitmq"),
-			Port:          env.GetEnvAsString("RABBITMQ_PORT", "5672"),
-			User:          env.GetEnvAsString("RABBITMQ_USER", "guest"),
-			Password:      env.GetEnvAsString("RABBITMQ_PASSWORD", "guest"),
-			PrefetchCount: env.GetEnvAsInt("RABBITMQ_PREFETCH_COUNT", 10),
+		Kafka: KafkaConfig{
+			Brokers:            env.GetEnvAsString("KAFKA_BROKERS", "kafka:9092"),
+			RebalanceTimeoutMs: env.GetEnvAsInt("KAFKA_REBALANCE_TIMEOUT_MS", 600000),
+			WorkerPoolSize:     env.GetEnvAsInt("KAFKA_WORKER_POOL_SIZE", 20),
 		},
 	}, nil
 }
