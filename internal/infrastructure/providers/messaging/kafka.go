@@ -76,6 +76,7 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 			fetches := consumer.client.PollFetches(ctx)
 
 			if ctx.Err() != nil {
+				consumer.client.AllowRebalance()
 				return
 			}
 
@@ -85,6 +86,7 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 				for _, e := range errs {
 					slog.Error("kafka fetch error", "error", e.Err)
 				}
+				consumer.client.AllowRebalance()
 				continue
 			}
 
@@ -113,6 +115,7 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 			if commitErr := consumer.client.CommitUncommittedOffsets(ctx); commitErr != nil {
 				slog.Error("failed to commit offsets", "error", commitErr)
 			}
+			consumer.client.AllowRebalance()
 		}
 	}()
 
