@@ -10,7 +10,7 @@ import (
 
 // New initializes the global slog logger based on the provided driver, path, and level.
 func New(log config.LogConfig, serviceName string) error {
-	var level slog.Level
+	level := parseLevel(log.Level)
 	var output io.Writer = os.Stdout
 
 	if log.Driver == config.File {
@@ -47,4 +47,18 @@ func New(log config.LogConfig, serviceName string) error {
 func Fatal(err error) {
 	slog.Error(err.Error())
 	os.Exit(1)
+}
+
+// parseLevel maps the configured log level to its slog equivalent, defaulting to info.
+func parseLevel(level config.LogLevel) slog.Level {
+	switch level {
+	case config.DebugLevel:
+		return slog.LevelDebug
+	case config.WarnLevel:
+		return slog.LevelWarn
+	case config.ErrorLevel:
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
