@@ -134,14 +134,10 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 	go func() {
 		defer func() {
 			hub.unregister <- client
-			err = conn.Close()
-
-			if err != nil {
-				return
-			}
+			_ = conn.Close()
 		}()
 		for message := range client.send {
-			if err = conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			if writeErr := conn.WriteMessage(websocket.TextMessage, message); writeErr != nil {
 				return
 			}
 		}
@@ -151,16 +147,10 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 	go func() {
 		defer func() {
 			hub.unregister <- client
-			err = conn.Close()
-
-			if err != nil {
-				return
-			}
+			_ = conn.Close()
 		}()
 		for {
-			_, _, err = conn.ReadMessage()
-
-			if err != nil {
+			if _, _, readErr := conn.ReadMessage(); readErr != nil {
 				return
 			}
 		}

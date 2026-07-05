@@ -102,20 +102,16 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 					slog.Info("message received from kafka", "topic", rec.Topic)
 
 					if handler, ok := handlers[rec.Topic]; ok {
-						err = handler.Handle(rec.Value)
-
-						if err != nil {
-							slog.Error("handler error", "error", err)
+						if handlerErr := handler.Handle(rec.Value); handlerErr != nil {
+							slog.Error("handler error", "error", handlerErr)
 						}
 					}
 				}(record)
 			})
 			waitGroup.Wait()
 
-			err = consumer.client.CommitUncommittedOffsets(ctx)
-
-			if err != nil {
-				slog.Error("failed to commit offsets", "error", err)
+			if commitErr := consumer.client.CommitUncommittedOffsets(ctx); commitErr != nil {
+				slog.Error("failed to commit offsets", "error", commitErr)
 			}
 		}
 	}()
