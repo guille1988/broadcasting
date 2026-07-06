@@ -18,7 +18,7 @@ import (
 )
 
 func TestNotificationModule(test *testing.T) {
-	integration.TestCase(test, "it should broadcast a login notification to all connected websocket clients", func(test *testing.T) {
+	integration.TestCase(test, "it should send a login notification to the logged-in user's websocket clients", func(test *testing.T) {
 		name := "Alice"
 		email := "alice@example.com"
 		userUUID := "test-user-uuid"
@@ -40,7 +40,7 @@ func TestNotificationModule(test *testing.T) {
 		broadcastAction := actions.NewBroadcastLogin(integration.TestApp.Container.Hub)
 		handler := handlers.NewUserLoggedIn(broadcastAction)
 
-		body, _ := json.Marshal(dtos.UserLoggedIn{Email: email, Name: name})
+		body, _ := json.Marshal(dtos.UserLoggedIn{UUID: userUUID, Email: email, Name: name})
 		err = handler.Handle(body)
 		assert.NoError(test, err)
 
@@ -53,5 +53,41 @@ func TestNotificationModule(test *testing.T) {
 
 		expected := fmt.Sprintf("Hello %s, we are very happy to have you here!!!!", name)
 		assert.Equal(test, expected, string(message))
+	})
+
+	integration.TestCase(test, "it should not deliver the login notification to other connected users", func(test *testing.T) {
+		targetUUID := "test-user-target"
+		bystanderUUID := "test-user-bystander"
+
+		dial := func(userUUID string) *websocket.Conn {
+			wsURL := "ws" + strings.TrimPrefix(integration.TestServer.URL, "http") + "/api/ws/" + userUUID
+			headers := http.Header{}
+			headers.Set("X-User-UUID", userUUID)
+			conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+			assert.NoError(test, err)
+			return conn
+		}
+
+		targetConn := dial(targetUUID)
+		defer func() { _ = targetConn.Close() }()
+
+		bystanderConn := dial(bystanderUUID)
+		defer func() { _ = bystanderConn.Close() }()
+
+		broadcastAction := actions.NewBroadcastLogin(integration.TestApp.Container.Hub)
+		handler := handlers.NewUserLoggedIn(broadcastAction)
+
+		body, _ := json.Marshal(dtos.UserLoggedIn{UUID: targetUUID, Email: "target@example.com", Name: "Target"})
+		err := handler.Handle(body)
+		assert.NoError(test, err)
+
+		assert.NoError(test, targetConn.SetReadDeadline(time.Now().Add(3*time.Second)))
+		_, message, err := targetConn.ReadMessage()
+		assert.NoError(test, err)
+		assert.Equal(test, "Hello Target, we are very happy to have you here!!!!", string(message))
+
+		assert.NoError(test, bystanderConn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+		_, _, err = bystanderConn.ReadMessage()
+		assert.Error(test, err, "the bystander must not receive a notification meant for another user")
 	})
 }

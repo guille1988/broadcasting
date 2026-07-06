@@ -26,5 +26,5 @@ func (handler *UserLoggedIn) Handle(body []byte) error {
 		return fmt.Errorf("failed to unmarshal user_logged_in dto: %w", err)
 	}
 
-	return handler.action.Execute(dto.Name)
+	return handler.action.Execute(dto.UUID, dto.Name)
 }

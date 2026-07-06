@@ -24,10 +24,17 @@ type Client struct {
 	userUUID string
 }
 
+// targetedMessage carries a message meant for a single user's connections.
+type targetedMessage struct {
+	userUUID string
+	message  []byte
+}
+
 // Hub manages all active WebSocket clients and routes broadcast messages.
 type Hub struct {
 	clients    map[string]map[*Client]bool // userUUID → set of clients
 	broadcast  chan []byte
+	directed   chan targetedMessage
 	register   chan *Client
 	unregister chan *Client
 }
@@ -37,6 +44,7 @@ func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[string]map[*Client]bool),
 		broadcast:  make(chan []byte, 256),
+		directed:   make(chan targetedMessage, 256),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 	}
@@ -87,6 +95,16 @@ func (hub *Hub) Run() {
 					}
 				}
 			}
+
+		case targeted := <-hub.directed:
+			for client := range hub.clients[targeted.userUUID] {
+				select {
+				case client.send <- targeted.message:
+				default:
+					close(client.send)
+					delete(hub.clients[targeted.userUUID], client)
+				}
+			}
 		}
 	}
 }
@@ -94,6 +112,11 @@ func (hub *Hub) Run() {
 // Broadcast enqueues a message to be delivered to all connected clients.
 func (hub *Hub) Broadcast(message []byte) {
 	hub.broadcast <- message
+}
+
+// SendToUser enqueues a message to be delivered only to the given user's connected clients.
+func (hub *Hub) SendToUser(userUUID string, message []byte) {
+	hub.directed <- targetedMessage{userUUID: userUUID, message: message}
 }
 
 // ServeWS upgrades an HTTP connection to WebSocket, registers the client,

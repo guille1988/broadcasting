@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// BroadcastLogin formats a welcome notification and sends it to all WebSocket clients.
+// BroadcastLogin formats a welcome notification and sends it to the logged-in user's WebSocket clients.
 type BroadcastLogin struct {
 	hub *websocket.Hub
 }
@@ -15,9 +15,9 @@ func NewBroadcastLogin(hub *websocket.Hub) *BroadcastLogin {
 	return &BroadcastLogin{hub: hub}
 }
 
-// Execute formats the notification message and broadcasts it to all connected clients.
-func (action *BroadcastLogin) Execute(name string) error {
+// Execute formats the notification message and sends it only to the given user's connected clients.
+func (action *BroadcastLogin) Execute(userUUID, name string) error {
 	message := fmt.Sprintf("Hello %s, we are very happy to have you here!!!!", name)
-	action.hub.Broadcast([]byte(message))
+	action.hub.SendToUser(userUUID, []byte(message))
 	return nil
 }
