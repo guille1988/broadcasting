@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -39,7 +40,10 @@ func NewKafkaConsumer(brokers string, rebalanceTimeoutMs int, workerPoolSize int
 func (consumer *KafkaConsumer) Register(queue, _, _, routingKey string, handler MessageHandler) error {
 	if consumer.groupID == "" {
 		consumer.groupID = queue
+	} else if consumer.groupID != queue {
+		return fmt.Errorf("kafka consumer: mismatched group id: already registered with %q, got %q", consumer.groupID, queue)
 	}
+
 	consumer.entries = append(consumer.entries, topicEntry{topic: routingKey, handler: handler})
 	return nil
 }
