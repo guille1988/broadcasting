@@ -4,8 +4,16 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
+)
+
+const (
+	// defaultWriteWait is the time allowed to write a message (data or ping) to the peer.
+	defaultWriteWait = 10 * time.Second
+	// defaultPongWait is the time allowed to read the next pong from the peer.
+	defaultPongWait = 60 * time.Second
 )
 
 var upgrader = websocket.Upgrader{
@@ -37,16 +45,29 @@ type Hub struct {
 	directed   chan targetedMessage
 	register   chan *Client
 	unregister chan *Client
+	writeWait  time.Duration
+	pongWait   time.Duration
+	pingPeriod time.Duration
 }
 
-// NewHub creates an initialized Hub ready to be started.
+// NewHub creates an initialized Hub ready to be started, using production heartbeat timeouts.
 func NewHub() *Hub {
+	return NewHubWithTimeouts(defaultWriteWait, defaultPongWait)
+}
+
+// NewHubWithTimeouts creates a Hub with custom write/pong timeouts (pingPeriod is
+// derived as 90% of pongWait). Exposed so tests can use short timeouts instead of
+// waiting on production-length (60s) heartbeat intervals.
+func NewHubWithTimeouts(writeWait, pongWait time.Duration) *Hub {
 	return &Hub{
 		clients:    make(map[string]map[*Client]bool),
 		broadcast:  make(chan []byte, 256),
 		directed:   make(chan targetedMessage, 256),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		writeWait:  writeWait,
+		pongWait:   pongWait,
+		pingPeriod: (pongWait * 9) / 10,
 	}
 }
 
@@ -153,25 +174,52 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 	client := &Client{conn: conn, send: make(chan []byte, 256), userUUID: headerUUID}
 	hub.register <- client
 
-	// Write pump: forwards messages from the channel to the connection.
+	// Write pump: forwards messages from the channel to the connection and
+	// pings the peer periodically so dead connections get detected and closed.
 	go func() {
+		ticker := time.NewTicker(hub.pingPeriod)
 		defer func() {
+			ticker.Stop()
 			hub.unregister <- client
 			_ = conn.Close()
 		}()
-		for message := range client.send {
-			if writeErr := conn.WriteMessage(websocket.TextMessage, message); writeErr != nil {
-				return
+		for {
+			select {
+			case message, ok := <-client.send:
+				_ = conn.SetWriteDeadline(time.Now().Add(hub.writeWait))
+
+				if !ok {
+					_ = conn.WriteMessage(websocket.CloseMessage, []byte{})
+					return
+				}
+
+				if writeErr := conn.WriteMessage(websocket.TextMessage, message); writeErr != nil {
+					return
+				}
+
+			case <-ticker.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(hub.writeWait))
+
+				if writeErr := conn.WriteMessage(websocket.PingMessage, nil); writeErr != nil {
+					return
+				}
 			}
 		}
 	}()
 
-	// Read pump: keeps the connection alive and detects client disconnection.
+	// Read pump: keeps the connection alive, detects client disconnection,
+	// and resets the read deadline whenever a pong (or any message) arrives.
 	go func() {
 		defer func() {
 			hub.unregister <- client
 			_ = conn.Close()
 		}()
+
+		_ = conn.SetReadDeadline(time.Now().Add(hub.pongWait))
+		conn.SetPongHandler(func(string) error {
+			return conn.SetReadDeadline(time.Now().Add(hub.pongWait))
+		})
+
 		for {
 			if _, _, readErr := conn.ReadMessage(); readErr != nil {
 				return
