@@ -1,181 +1,129 @@
-### Broadcasting Microservice in Go
+# Broadcasting Microservice
 
-This is a specialized broadcasting microservice built with **Go**, designed to deliver real-time notifications to connected clients using **WebSockets**. It consumes events from **Kafka** and instantly pushes messages to all active WebSocket connections.
-
----
-
-### Features
-
-*   **Real-time Notifications**: Pushes messages to all connected WebSocket clients instantly upon receiving a Kafka event.
-*   **WebSocket Server**: Exposes a `/ws` endpoint for clients to subscribe to live updates.
-*   **Asynchronous Processing**: Consumes events from Kafka without blocking the HTTP server.
-*   **Hub Pattern**: Thread-safe client management using Go channels — no mutexes required.
-*   **Clean Architecture**: Strict separation of concerns (domain, infrastructure, and application layers).
-*   **Containerized**: Fully Dockerized for seamless integration with the microservices ecosystem.
-*   **Testing Suite**: Includes integration tests using an in-process WebSocket server.
+Kafka consumer + WebSocket server that delivers real-time notifications to connected clients. Like `email`, it has no HTTP write API — its only input is Kafka events from `auth`, and its only output is a push over an already-open WebSocket connection.
 
 ---
 
-### Tech Stack
+## Features
 
-*   **Language**: Go 1.25+
-*   **Messaging**: [Kafka (twmb/franz-go)](https://github.com/twmb/franz-go)
-*   **WebSockets**: [Gorilla WebSocket](https://github.com/gorilla/websocket)
-*   **Testing**: [Testify](https://github.com/stretchr/testify)
-
----
-
-### Prerequisites
-
-*   [Docker](https://www.docker.com/) and Docker Compose.
-*   [Go](https://golang.org/) (optional, for local development).
-*   `make` (utility to run Makefile commands from the root).
+- **Per-user real-time delivery**: a login event reaches only the WebSocket connections belonging to that specific user, via `Hub.SendToUser(uuid, message)` — not a blind broadcast to every connected client.
+- **Mutex-free client registry**: the hub's connection map is owned by a single goroutine; all registration, unregistration, and broadcast operations happen through channels, not locks (see [The Hub Pattern](#the-hub-pattern)).
+- **Backpressure handling**: a slow or stalled client is dropped from the hub instead of blocking message delivery to every other connected client.
+- **Connection health via heartbeat**: periodic WebSocket ping/pong with read/write deadlines detects and cleans up dead connections that never sent a proper close frame.
+- **Path-based identity, established by the gateway**: each client connects to `/ws/:uuid`. The `broadcasting` service itself never validates a JWT or checks who the caller is — that's enforced one layer up, by the gateway's forward-auth step (Traefik locally, nginx-ingress in production), which calls `auth`'s `/api/auth/validate` before ever letting the WebSocket request through. See the root README's [Infrastructure Architecture](../../README.md#infrastructure-architecture) for the exact configuration.
 
 ---
 
-### Getting Started
+## Tech Stack
 
-1.  **Clone the repository** (if not done yet):
-    ```bash
-    git clone <repository-url>
-    cd broadcasting
-    ```
-
-2.  **Environment Setup**:
-    Ensure the `.env` file is configured with your Kafka broker address.
-
-3.  **Run the Consumer**:
-    This service operates as a Kafka consumer and WebSocket server simultaneously.
-    ```bash
-    go run cmd/consumer/main.go
-    ```
+- **Language**: Go 1.25
+- **Messaging**: Kafka via [`twmb/franz-go`](https://github.com/twmb/franz-go)
+- **WebSockets**: [Gorilla WebSocket](https://github.com/gorilla/websocket)
+- **Testing**: [Testify](https://github.com/stretchr/testify), in-process WebSocket server (no external containers needed)
 
 ---
 
-### Development Commands
+## Folder Structure
 
-From the root `Makefile`, you can manage this service:
+> For the general architecture patterns used here — the layered `handlers/actions` structure, dependency injection, and typed config — see the **[Architecture section of the root README](../../README.md#architecture)**. This section covers only what's specific to `broadcasting`.
 
-| Command | Description |
-| :--- | :--- |
-| `make up` | Start all infrastructure including Kafka. |
-| `make compile` | Compile the broadcasting consumer binary. |
-| `make test` | Run tests for the broadcasting microservice. |
-
----
-
-### WebSocket Connection
-
-Connect any WebSocket client to receive real-time notifications:
-
-```
-ws://localhost:8081/ws
-```
-
-Example notification received on login:
-```
-Hello Alice, we are very happy to have you here!!!!
+```text
+internal/
+├── bootstrap/
+│   └── consumer.go        # Kafka client setup + WebSocket server, shared lifecycle
+├── domain/
+│   ├── notification/
+│   │   ├── actions/        # BroadcastLogin — formats and routes the message to the hub
+│   │   ├── handlers/         # Kafka message → DTO → action
+│   │   └── module.go          # Registers GET /ws/:uuid
+│   └── health/
+├── infrastructure/
+│   ├── websocket/
+│   │   └── hub.go            # Connection registry, ping/pong, backpressure-safe broadcast
+│   └── providers/messaging/    # Kafka consumer (same balancer/commit pattern as email)
+└── internal/shared/               # go-app-shared submodule (Kafka DTOs, routing keys)
 ```
 
 ---
 
-### Message Consumers
+## The Hub Pattern
 
-#### User Logged In (`broadcasting.service`)
-*   **Topic**: `user.logged_in`
-*   **Payload**: `UserLoggedIn` (contains user email and name)
-*   **Action**: Broadcasts `"Hello {name}, we are very happy to have you here!!!!"` to all connected WebSocket clients.
+The WebSocket hub avoids a `sync.Mutex` around its client map entirely. Instead, a single goroutine owns the map and reacts to three channels: `register`, `unregister`, and `broadcast`. Every other goroutine (one read pump + one write pump per connected client) only ever *sends* to those channels — never reads or writes the map directly.
+
+This gives two properties for free:
+- **No lock contention**, even with thousands of concurrent connections, because there's fundamentally nothing to lock — the map has exactly one reader/writer.
+- **Safe backpressure**: when broadcasting, a send to a client's outbound channel uses a non-blocking `select` with a `default` case. If a client's buffer is full (it's not reading fast enough), that one client is dropped from the hub instead of the whole hub stalling waiting for it.
+
+### Connection Health
+
+Every connection is guarded by:
+- A **write deadline** on every outbound write (including pings).
+- A **read deadline** reset every time a pong is received (`SetPongHandler`).
+- A **ticker** on the write pump that sends a ping at a fixed interval.
+
+If a client stops responding to pings, its read deadline expires, the read pump errors out, and the connection is cleaned up from the hub — without waiting for a TCP-level timeout that could take minutes.
 
 ---
 
-### Messaging — Consuming a new message
+## Consumers
 
-To consume a new message from Kafka, follow these 4 steps without touching any messaging infrastructure files:
+| Consumer group | Topic | Payload | Action |
+|---|---|---|---|
+| `broadcasting.service` | `user.logged_in` | `UserLoggedIn` (UUID, name) | `BroadcastLogin.Execute` → `Hub.SendToUser(uuid, "Hello {name}, ...")` |
 
-**1. Create the DTO** in `internal/shared/messaging/kafka/dtos/`:
-```go
-// internal/shared/messaging/kafka/dtos/user_updated.go
-type UserUpdated struct {
-    ID   uint   `json:"id"`
-    Name string `json:"name"`
-}
+---
+
+## WebSocket Connection
+
+```
+ws://localhost:8081/ws/{uuid}
 ```
 
-**2. Create the action** in `internal/domain/notification/actions/`:
-```go
-// internal/domain/notification/actions/broadcast_user_updated.go
-func (a *BroadcastUserUpdated) Execute(name string) error {
-    message := fmt.Sprintf("User %s has been updated", name)
-    a.hub.Broadcast([]byte(message))
-    return nil
-}
-```
+The `{uuid}` in the path identifies which user this connection belongs to — it's how the hub knows which connections to target when a `UserLoggedIn` event for that same UUID arrives.
+
+---
+
+## Messaging — Consuming a New Event
+
+To add a new consumer without touching messaging infrastructure:
+
+**1. Add the DTO** to the shared module (`internal/shared/messaging/kafka/dtos/`).
+
+**2. Create the action** in `internal/domain/notification/actions/`, depending on `*websocket.Hub` and calling either `SendToUser` (targeted) or `Broadcast` (all connected clients — use deliberately, it's the exception, not the default).
 
 **3. Create the handler** in `internal/domain/notification/handlers/`:
 ```go
-// internal/domain/notification/handlers/user_updated.go
 func (h *UserUpdated) Handle(body []byte) error {
     var dto dtos.UserUpdated
     if err := json.Unmarshal(body, &dto); err != nil {
         return fmt.Errorf("failed to unmarshal user_updated dto: %w", err)
     }
-    return h.action.Execute(dto.Name)
+    return h.action.Execute(dto.UUID, dto.Name)
 }
 ```
 
-**4. Register the handler** in `internal/bootstrap/consumer.go`:
-```go
-provider.Register(
-    "broadcasting.service",
-    "",
-    "",
-    "user.updated",
-    handlers.NewUserUpdated(broadcastUserUpdatedAction),
-)
-```
-
-No infrastructure files need to be modified.
+**4. Register it** in `internal/bootstrap/consumer.go`.
 
 ---
 
-### Project Structure
+## Environment Variables
 
-```text
-├── cmd/                # Entry point (Consumer)
-├── internal/
-│   ├── bootstrap/      # App initialization logic (Kafka, WebSocket server)
-│   ├── domain/         # Business logic (Notification module)
-│   │   └── notification/ # Actions, handlers
-│   ├── infrastructure/ # Frameworks & Drivers (Kafka, WebSocket Hub, Logger)
-│   ├── shared/         # Shared DTOs for messaging
-├── tests/              # Integration tests
-├── Dockerfile          # Container build configuration
-└── go.mod              # Dependencies
-```
+| Variable | Default | Description |
+|---|---|---|
+| `APP_NAME` | `broadcasting` | Service name |
+| `APP_ENV` | `local` | `local` \| `testing` \| `staging` \| `production` |
+| `KAFKA_BROKERS` | `kafka:9092` | Kafka bootstrap servers |
+| `LOG_DRIVER` | `stdout` | `stdout` \| `file` |
+| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
 ---
 
-### Environment Variables
+## Getting Started
 
-Key configurations:
-*   `APP_NAME`: Service name (default: `broadcasting`).
-*   `APP_ENV`: Environment (`local`, `testing`, `staging`, `production`).
-*   `KAFKA_BROKERS`: Kafka broker address (e.g. `kafka:9092`).
-*   `LOG_DRIVER`: Log output driver (`stdout` or `file`).
-*   `LOG_LEVEL`: Log level (`debug`, `info`, `warn`, `error`).
-
----
-
-### Testing
-
-Run tests using the project root Makefile:
 ```bash
-make test
+go run cmd/consumer/main.go
 ```
 
-The tests use an in-process WebSocket server to verify that incoming Kafka messages are correctly broadcasted to connected clients. No external containers are required.
+Or from the repo root: `make up`, `make test` (see the [root README](../../README.md)). Tests spin up an in-process WebSocket server — no external containers required for this service.
 
-> **Note**: After adding new dependencies to `go.mod`, run `go mod tidy` inside the container to regenerate `go.sum`:
-> ```bash
-> docker exec broadcasting go mod tidy
-> ```
+> After adding a dependency to `go.mod`, regenerate `go.sum` inside the container: `docker exec broadcasting go mod tidy`.
