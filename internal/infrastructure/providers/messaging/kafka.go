@@ -25,6 +25,7 @@ type KafkaConsumer struct {
 	client           *kgo.Client
 	rebalanceTimeout time.Duration
 	workerPoolSize   int
+	done             chan struct{}
 }
 
 func NewKafkaConsumer(brokers string, rebalanceTimeoutMs int, workerPoolSize int) *KafkaConsumer {
@@ -64,6 +65,7 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 		return err
 	}
 	consumer.client = client
+	consumer.done = make(chan struct{})
 
 	handlers := make(map[string]MessageHandler, len(consumer.entries))
 
@@ -72,6 +74,8 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 	}
 
 	go func() {
+		defer close(consumer.done)
+
 		for {
 			fetches := consumer.client.PollFetches(ctx)
 
@@ -122,9 +126,20 @@ func (consumer *KafkaConsumer) StartAll(ctx context.Context) error {
 	return nil
 }
 
+/*
+Close waits for the in-flight batch (if any) to finish processing and
+commit — signaled by the poll loop exiting after ctx is canceled — before
+closing the underlying client. Callers must cancel StartAll's ctx before
+calling Close, otherwise this blocks until that happens.
+*/
 func (consumer *KafkaConsumer) Close() error {
+	if consumer.done != nil {
+		<-consumer.done
+	}
+
 	if consumer.client != nil {
 		consumer.client.Close()
 	}
+
 	return nil
 }

@@ -38,8 +38,7 @@ func Run(appInstance *app.App) error {
 		return err
 	}
 
-	appInstance.CloseAll()
-	slog.Info("application stopped safely")
+	slog.Info("http server stopped safely")
 
 	return nil
 }

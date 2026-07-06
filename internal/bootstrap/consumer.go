@@ -33,11 +33,13 @@ func NewConsumer() (*app.App, error) {
 	}, nil
 }
 
-// RunConsumer starts the RabbitMQ consumer and the HTTP server.
+/*
+RunConsumer starts the Kafka consumer and the HTTP server and orchestrates
+their shutdown in the right order: stop accepting new Kafka batches, let
+the in-flight one finish, close the Kafka client, then close everything else.
+*/
 func RunConsumer(appInstance *app.App) error {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	defer appInstance.CloseAll()
 
 	broadcastLoginAction := actions.NewBroadcastLogin(appInstance.Container.Hub)
 
@@ -47,15 +49,23 @@ func RunConsumer(appInstance *app.App) error {
 		appInstance.Config.Kafka.WorkerPoolSize,
 	)
 
-	appInstance.AddCloser(func() error {
-		err := provider.Close()
+	/*
+		Runs exactly once, on every return path (including early errors):
+		stop the poll loop from starting new batches, wait for the in-flight
+		one to finish, close the Kafka client, then close everything else.
+	*/
+	defer func() {
+		slog.Info("shutting down: waiting for in-flight messages to finish...")
+		cancel()
 
-		if err != nil {
-			slog.Error("failed to close Kafka provider", "error", err)
+		if closeErr := provider.Close(); closeErr != nil {
+			slog.Error("failed to close Kafka provider", "error", closeErr)
 		}
 
-		return nil
-	})
+		appInstance.CloseAll()
+
+		slog.Info("consumer stopped safely")
+	}()
 
 	err := provider.Register(
 		"broadcasting.service",
