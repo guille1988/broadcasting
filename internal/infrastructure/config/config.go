@@ -2,6 +2,7 @@ package config
 
 import (
 	"broadcasting/internal/infrastructure/env"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -11,6 +12,17 @@ type Config struct {
 	App   AppConfig
 	Log   LogConfig
 	Kafka KafkaConfig
+	Auth  AuthClientConfig
+}
+
+/*
+AuthClientConfig configures the gRPC client for the auth service and the
+token revalidation job that uses it.
+*/
+type AuthClientConfig struct {
+	GRPCAddress          string
+	RevalidationInterval time.Duration
+	RevalidationTimeout  time.Duration
 }
 
 // AppConfig represents the application configuration.
@@ -78,6 +90,11 @@ func New() (*Config, error) {
 			Brokers:            env.GetEnvAsString("KAFKA_BROKERS", "kafka:9092"),
 			RebalanceTimeoutMs: env.GetEnvAsInt("KAFKA_REBALANCE_TIMEOUT_MS", 600000),
 			WorkerPoolSize:     env.GetEnvAsInt("KAFKA_WORKER_POOL_SIZE", 20),
+		},
+		Auth: AuthClientConfig{
+			GRPCAddress:          env.GetEnvAsString("AUTH_GRPC_ADDRESS", "auth:9090"),
+			RevalidationInterval: time.Duration(env.GetEnvAsInt("TOKEN_REVALIDATION_INTERVAL_MINUTES", 5)) * time.Minute,
+			RevalidationTimeout:  time.Duration(env.GetEnvAsInt("TOKEN_REVALIDATION_TIMEOUT_SECONDS", 5)) * time.Second,
 		},
 	}, nil
 }

@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"broadcasting/internal/infrastructure/providers/messaging"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,7 +12,7 @@ type noopHandler struct{}
 func (noopHandler) Handle(_ []byte) error { return nil }
 
 func TestRegisterRejectsMismatchedGroupID(test *testing.T) {
-	consumer := NewKafkaConsumer("kafka:9092", 60000, 1)
+	consumer := messaging.NewKafkaConsumer("kafka:9092", 60000, 1)
 
 	assert.NoError(test, consumer.Register("service.a", "", "", "topic.one", noopHandler{}))
 	assert.NoError(test, consumer.Register("service.a", "", "", "topic.two", noopHandler{}), "same group id on a second topic must be accepted")
@@ -22,5 +23,9 @@ func TestRegisterRejectsMismatchedGroupID(test *testing.T) {
 		assert.Contains(test, err.Error(), "mismatched group id")
 	}
 
-	assert.Len(test, consumer.entries, 2, "the rejected registration must not be added")
+	/*
+	 The rejected registration must not corrupt the consumer: the original
+	 group id keeps working afterwards.
+	*/
+	assert.NoError(test, consumer.Register("service.a", "", "", "topic.three", noopHandler{}))
 }

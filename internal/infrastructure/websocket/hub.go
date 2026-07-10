@@ -30,12 +30,34 @@ type Client struct {
 	conn     *websocket.Conn
 	send     chan []byte
 	userUUID string
+	token    string
+	/*
+	 closeReason, when set before close(send), is the close frame the writing
+	 pump delivers instead of the default empty one. Written only by the hub
+	 goroutine before closing sending; the channel close synchronizes-before the
+	 writing pump's read, so no lock is needed.
+	*/
+	closeReason []byte
 }
 
 // targetedMessage carries a message meant for a single user's connections.
 type targetedMessage struct {
 	userUUID string
 	message  []byte
+}
+
+// ClientSnapshot is a point-in-time view of one connected client.
+type ClientSnapshot struct {
+	Client   *Client
+	UserUUID string
+	Token    string
+}
+
+// disconnectRequest asks the hub to close one client with a close code.
+type disconnectRequest struct {
+	client *Client
+	code   int
+	reason string
 }
 
 // Hub manages all active WebSocket clients and routes broadcast messages.
@@ -45,6 +67,8 @@ type Hub struct {
 	directed   chan targetedMessage
 	register   chan *Client
 	unregister chan *Client
+	snapshot   chan chan []ClientSnapshot
+	disconnect chan disconnectRequest
 	writeWait  time.Duration
 	pongWait   time.Duration
 	pingPeriod time.Duration
@@ -55,9 +79,11 @@ func NewHub() *Hub {
 	return NewHubWithTimeouts(defaultWriteWait, defaultPongWait)
 }
 
-// NewHubWithTimeouts creates a Hub with custom write/pong timeouts (pingPeriod is
-// derived as 90% of pongWait). Exposed so tests can use short timeouts instead of
-// waiting on production-length (60s) heartbeat intervals.
+/*
+NewHubWithTimeouts creates a Hub with custom write/pong timeouts (pingPeriod is
+derived as 90% of pongWait). Exposed so tests can use short timeouts instead of
+waiting on production-length (60s) heartbeat intervals.
+*/
 func NewHubWithTimeouts(writeWait, pongWait time.Duration) *Hub {
 	return &Hub{
 		clients:    make(map[string]map[*Client]bool),
@@ -65,14 +91,18 @@ func NewHubWithTimeouts(writeWait, pongWait time.Duration) *Hub {
 		directed:   make(chan targetedMessage, 256),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		snapshot:   make(chan chan []ClientSnapshot),
+		disconnect: make(chan disconnectRequest),
 		writeWait:  writeWait,
 		pongWait:   pongWait,
 		pingPeriod: (pongWait * 9) / 10,
 	}
 }
 
-// Run manages the client lifecycle. Must be called in its own goroutine.
-// It is the only goroutine that accesses h.clients, so no mutex is needed.
+/*
+Run manages the client lifecycle. Must be called in its own goroutine.
+It is the only goroutine that accesses h.clients, so no mutex is needed.
+*/
 func (hub *Hub) Run() {
 	for {
 		select {
@@ -84,26 +114,26 @@ func (hub *Hub) Run() {
 			slog.Info("websocket client connected", "user_uuid", client.userUUID, "total_users", len(hub.clients))
 
 		case client := <-hub.unregister:
-			mapping, okMapping := hub.clients[client.userUUID]
+			hub.removeClient(client)
 
-			if okMapping {
-				_, okClient := mapping[client]
+		case request := <-hub.disconnect:
+			/*
+			 Set the close frame before removeClient closes sending: the
+			 channel close synchronizes-before the writing pump reading it.
+			*/
+			request.client.closeReason = websocket.FormatCloseMessage(request.code, request.reason)
+			hub.removeClient(request.client)
 
-				if okClient {
-					delete(mapping, client)
-					close(client.send)
+		case reply := <-hub.snapshot:
+			var clients []ClientSnapshot
 
-					if len(mapping) == 0 {
-						delete(hub.clients, client.userUUID)
-					}
-
-					slog.Info(
-						"websocket client disconnected",
-						"user_uuid", client.userUUID,
-						"total_users", len(hub.clients),
-					)
+			for userUUID, mapping := range hub.clients {
+				for client := range mapping {
+					clients = append(clients, ClientSnapshot{Client: client, UserUUID: userUUID, Token: client.token})
 				}
 			}
+
+			reply <- clients
 
 		case message := <-hub.broadcast:
 			for _, clients := range hub.clients {
@@ -130,9 +160,60 @@ func (hub *Hub) Run() {
 	}
 }
 
+/*
+removeClient deletes the client from the map and closes its send channel.
+Must run on the hub goroutine. The presence check makes a second removal of
+the same client a no-op, so a Disconnect racing a pump-driven unregister can
+never double-close send.
+*/
+func (hub *Hub) removeClient(client *Client) {
+	mapping, okMapping := hub.clients[client.userUUID]
+
+	if !okMapping {
+		return
+	}
+
+	_, okClient := mapping[client]
+
+	if !okClient {
+		return
+	}
+
+	delete(mapping, client)
+	close(client.send)
+
+	if len(mapping) == 0 {
+		delete(hub.clients, client.userUUID)
+	}
+
+	slog.Info(
+		"websocket client disconnected",
+		"user_uuid", client.userUUID,
+		"total_users", len(hub.clients),
+	)
+}
+
 // Broadcast enqueues a message to be delivered to all connected clients.
 func (hub *Hub) Broadcast(message []byte) {
 	hub.broadcast <- message
+}
+
+// Snapshot returns a point-in-time view of every connected client.
+func (hub *Hub) Snapshot() []ClientSnapshot {
+	// Buffered so the hub goroutine never blocks delivering the reply.
+	reply := make(chan []ClientSnapshot, 1)
+	hub.snapshot <- reply
+
+	return <-reply
+}
+
+/*
+Disconnect closes the given client's connection, delivering a close frame
+with the given application close code (4000-4999) and reason to the peer.
+Safe to call with a client that is already disconnected: it becomes a no-op.
+*/
+func (hub *Hub) Disconnect(client *Client, code int, reason string) {
+	hub.disconnect <- disconnectRequest{client: client, code: code, reason: reason}
 }
 
 // SendToUser enqueues a message to be delivered only to the given user's connected clients.
@@ -140,9 +221,27 @@ func (hub *Hub) SendToUser(userUUID string, message []byte) {
 	hub.directed <- targetedMessage{userUUID: userUUID, message: message}
 }
 
-// ServeWS upgrades an HTTP connection to WebSocket, registers the client,
-// and starts the read and write pumps in separate goroutines.
-// It expects the X-User-UUID header to be set by the API gateway (Traefik).
+/*
+extractToken returns the bearer token from the Authorization header, or ""
+when absent. The gateway's forward-auth already requires this header, so
+every proxied connection carries it; connections without one are handled by
+the revalidation job, not rejected at upgrade time.
+*/
+func extractToken(request *http.Request) string {
+	parts := strings.SplitN(request.Header.Get("Authorization"), " ", 2)
+
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		return ""
+	}
+
+	return parts[1]
+}
+
+/*
+ServeWS upgrades an HTTP connection to WebSocket, registers the client,
+and starts the read and write pumps in separate goroutines.
+It expects the X-User-UUID header to be set by the API gateway (Traefik).
+*/
 func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 	headerUUID := request.Header.Get("X-User-UUID")
 
@@ -171,11 +270,13 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	client := &Client{conn: conn, send: make(chan []byte, 256), userUUID: headerUUID}
+	client := &Client{conn: conn, send: make(chan []byte, 256), userUUID: headerUUID, token: extractToken(request)}
 	hub.register <- client
 
-	// Write pump: forwards messages from the channel to the connection and
-	// pings the peer periodically so dead connections get detected and closed.
+	/*
+	 Write pump: forwards messages from the channel to the connection and
+	 pings the peer periodically so dead connections get detected and closed.
+	*/
 	go func() {
 		ticker := time.NewTicker(hub.pingPeriod)
 		defer func() {
@@ -189,7 +290,13 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 				_ = conn.SetWriteDeadline(time.Now().Add(hub.writeWait))
 
 				if !ok {
-					_ = conn.WriteMessage(websocket.CloseMessage, []byte{})
+					closeMessage := client.closeReason
+
+					if closeMessage == nil {
+						closeMessage = []byte{}
+					}
+
+					_ = conn.WriteMessage(websocket.CloseMessage, closeMessage)
 					return
 				}
 
@@ -207,8 +314,10 @@ func (hub *Hub) ServeWS(writer http.ResponseWriter, request *http.Request) {
 		}
 	}()
 
-	// Read pump: keeps the connection alive, detects client disconnection,
-	// and resets the read deadline whenever a pong (or any message) arrives.
+	/*
+	 Read pump: keeps the connection alive, detects client disconnection,
+	 and resets the read deadline whenever a pong (or any message) arrives.
+	*/
 	go func() {
 		defer func() {
 			hub.unregister <- client

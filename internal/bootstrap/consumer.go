@@ -79,6 +79,10 @@ func RunConsumer(appInstance *app.App) error {
 		return err
 	}
 
+	if err = startRevalidationJob(ctx, appInstance); err != nil {
+		return err
+	}
+
 	err = provider.StartAll(ctx)
 
 	if err != nil {

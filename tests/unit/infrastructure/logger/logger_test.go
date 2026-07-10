@@ -2,6 +2,7 @@ package logger
 
 import (
 	"broadcasting/internal/infrastructure/config"
+	"broadcasting/internal/infrastructure/logger"
 	"context"
 	"log/slog"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestNewAppliesConfiguredLogLevel(test *testing.T) {
-	err := New(config.LogConfig{Driver: config.StdoutFormat, Level: config.ErrorLevel}, "test-service")
+	err := logger.New(config.LogConfig{Driver: config.StdoutFormat, Level: config.ErrorLevel}, "test-service")
 	assert.NoError(test, err)
 
 	handler := slog.Default().Handler()
