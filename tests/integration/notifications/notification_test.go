@@ -82,7 +82,8 @@ func TestNotificationModule(test *testing.T) {
 		assert.NoError(test, err)
 
 		assert.NoError(test, targetConn.SetReadDeadline(time.Now().Add(3*time.Second)))
-		_, message, err := targetConn.ReadMessage()
+		var message []byte
+		_, message, err = targetConn.ReadMessage()
 		assert.NoError(test, err)
 		assert.Equal(test, "Hello Target, we are very happy to have you here!!!!", string(message))
 

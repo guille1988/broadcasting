@@ -58,7 +58,8 @@ func newAuthClient(test *testing.T, service *fakeAuthService) *grpcprovider.Auth
 		_ = server.Serve(listener)
 	}()
 
-	authClient, err := grpcprovider.NewAuthClient(listener.Addr().String(), 2*time.Second)
+	var authClient *grpcprovider.AuthClient
+	authClient, err = grpcprovider.NewAuthClient(listener.Addr().String(), 2*time.Second)
 	assert.NoError(test, err)
 
 	test.Cleanup(func() {
