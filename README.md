@@ -1,6 +1,6 @@
 # Broadcasting Microservice
 
-Kafka consumer + WebSocket server that delivers real-time notifications to connected clients. Like `email`, it has no HTTP write API — its only input is Kafka events from `auth`, and its only output is a push over an already-open WebSocket connection.
+Kafka consumer + WebSocket server that delivers real-time notifications to connected clients. Like `email`, it has no HTTP write API — its only input is Kafka events from `auth`, and its only output is a push over an already-open WebSocket connection. Its one synchronous dependency is a periodic gRPC call to `auth` that revalidates the tokens of open connections (see [Token Revalidation](#token-revalidation)).
 
 ---
 
@@ -10,7 +10,8 @@ Kafka consumer + WebSocket server that delivers real-time notifications to conne
 - **Mutex-free client registry**: the hub's connection map is owned by a single goroutine; all registration, unregistration, and broadcast operations happen through channels, not locks (see [The Hub Pattern](#the-hub-pattern)).
 - **Backpressure handling**: a slow or stalled client is dropped from the hub instead of blocking message delivery to every other connected client.
 - **Connection health via heartbeat**: periodic WebSocket ping/pong with read/write deadlines detects and cleans up dead connections that never sent a proper close frame.
-- **Path-based identity, established by the gateway**: each client connects to `/ws/:uuid`. The `broadcasting` service itself never validates a JWT or checks who the caller is — that's enforced one layer up, by the gateway's forward-auth step (Traefik locally, nginx-ingress in production), which calls `auth`'s `/api/auth/validate` before ever letting the WebSocket request through. See the root README's [Infrastructure Architecture](../../README.md#infrastructure-architecture) for the exact configuration.
+- **Path-based identity, established by the gateway**: each client connects to `/ws/:uuid`. The handshake is authenticated one layer up, by the gateway's forward-auth step (Traefik locally, nginx-ingress in production), which calls `auth`'s `/api/auth/validate` before ever letting the WebSocket request through. See the root README's [Infrastructure Architecture](../../README.md#infrastructure-architecture) for the exact configuration.
+- **Token revalidation for long-lived connections**: the gateway only authenticates the handshake — a connection could otherwise outlive its credentials indefinitely. A background job re-asks `auth` (over gRPC) whether each connection's token is still valid every N minutes, and closes stale ones with application close code **4401** (see [Token Revalidation](#token-revalidation)).
 
 ---
 
@@ -19,6 +20,7 @@ Kafka consumer + WebSocket server that delivers real-time notifications to conne
 - **Language**: Go 1.25
 - **Messaging**: Kafka via [`twmb/franz-go`](https://github.com/twmb/franz-go)
 - **WebSockets**: [Gorilla WebSocket](https://github.com/gorilla/websocket)
+- **RPC**: [gRPC](https://grpc.io/) client for `auth`'s `AuthService` (contract in `go-app-shared`, see [Token Revalidation](#token-revalidation))
 - **Testing**: [Testify](https://github.com/stretchr/testify), in-process WebSocket server (no external containers needed)
 
 ---
@@ -30,18 +32,23 @@ Kafka consumer + WebSocket server that delivers real-time notifications to conne
 ```text
 internal/
 ├── bootstrap/
-│   └── consumer.go        # Kafka client setup + WebSocket server, shared lifecycle
+│   ├── consumer.go        # Kafka client setup + WebSocket server, shared lifecycle
+│   └── revalidation.go    # Wires the token revalidation job (gRPC client + ticker)
 ├── domain/
 │   ├── notification/
-│   │   ├── actions/        # BroadcastLogin — formats and routes the message to the hub
+│   │   ├── actions/        # BroadcastLogin, RevalidateTokens
 │   │   ├── handlers/         # Kafka message → DTO → action
 │   │   └── module.go          # Registers GET /ws/:uuid
 │   └── health/
 ├── infrastructure/
 │   ├── websocket/
 │   │   └── hub.go            # Connection registry, ping/pong, backpressure-safe broadcast
-│   └── providers/messaging/    # Kafka consumer (same balancer/commit pattern as email)
-└── internal/shared/               # go-app-shared submodule (Kafka DTOs, routing keys)
+│   ├── jobs/
+│   │   └── runner.go         # Generic ticker loop: runs a function every interval until shutdown
+│   └── providers/
+│       ├── grpc/              # AuthClient — gRPC client for auth's AuthService
+│       └── messaging/          # Kafka consumer (same balancer/commit pattern as email)
+└── internal/shared/               # go-app-shared submodule (Kafka DTOs, gRPC contracts, routing keys)
 ```
 
 ---
@@ -79,7 +86,25 @@ If a client stops responding to pings, its read deadline expires, the read pump 
 ws://localhost:8081/ws/{uuid}
 ```
 
-The `{uuid}` in the path identifies which user this connection belongs to — it's how the hub knows which connections to target when a `UserLoggedIn` event for that same UUID arrives.
+The `{uuid}` in the path identifies which user this connection belongs to — it's how the hub knows which connections to target when a `UserLoggedIn` event for that same UUID arrives. The `Authorization: Bearer` header (which the gateway's forward-auth already requires) is captured at the handshake and stored on the connection, so the revalidation job can later re-check it.
+
+---
+
+## Token Revalidation
+
+The gateway authenticates the WebSocket **handshake**, but a connection can stay open for hours — long after its token expired or its user logged out. This service closes that gap with a background job (`RevalidateTokens`, run by `jobs.Run` every `TOKEN_REVALIDATION_INTERVAL_MINUTES`):
+
+1. **Snapshot** the hub's open connections (through a channel, preserving the hub's single-goroutine ownership — no locks added).
+2. **Validate each unique token once** against `auth`'s gRPC `AuthService/ValidateToken` (contract in `go-app-shared`'s `rpc/auth/v1`). `auth` checks both the JWT itself and whether the user still holds a live session, so a logout revokes connections within one tick even while the JWT is still cryptographically valid.
+3. **Close** the connections whose token came back invalid, with application close code **4401** and the reason (`EXPIRED`, `REVOKED`, ...) as the close message.
+
+**The client contract**: on close code `4401`, refresh your token and reconnect. It is deliberately distinguishable from a network failure (`1006`) so clients can react differently.
+
+**Failure semantics are asymmetric on purpose:**
+- **Fail open** on infrastructure errors: if `auth` (or its session store) is unreachable, the tick logs a warning and keeps every connection — users are never punished for an internal outage; the next successful tick enforces expiry.
+- **Fail closed** on missing tokens: a connection with no captured token never passed the gateway (it dialed the service directly) and is closed without asking `auth`.
+
+The worst-case lifetime of a stale connection is `token expiry + revalidation interval` — tune `TOKEN_REVALIDATION_INTERVAL_MINUTES` to trade Redis/gRPC load against that window.
 
 ---
 
@@ -113,6 +138,9 @@ func (h *UserUpdated) Handle(body []byte) error {
 | `APP_NAME` | `broadcasting` | Service name |
 | `APP_ENV` | `local` | `local` \| `testing` \| `staging` \| `production` |
 | `KAFKA_BROKERS` | `kafka:9092` | Kafka bootstrap servers |
+| `AUTH_GRPC_ADDRESS` | `auth:9090` | auth's gRPC endpoint for token revalidation |
+| `TOKEN_REVALIDATION_INTERVAL_MINUTES` | `5` | How often the revalidation job runs |
+| `TOKEN_REVALIDATION_TIMEOUT_SECONDS` | `5` | Per-call deadline for the gRPC validation |
 | `LOG_DRIVER` | `stdout` | `stdout` \| `file` |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
