@@ -12,6 +12,7 @@ Kafka consumer + WebSocket server that delivers real-time notifications to conne
 - **Connection health via heartbeat**: periodic WebSocket ping/pong with read/write deadlines detects and cleans up dead connections that never sent a proper close frame.
 - **Path-based identity, established by the gateway**: each client connects to `/ws/:uuid`. The handshake is authenticated one layer up, by the gateway's forward-auth step (Traefik locally, nginx-ingress in production), which calls `auth`'s `/api/auth/validate` before ever letting the WebSocket request through. See the root README's [Infrastructure Architecture](../../README.md#infrastructure-architecture) for the exact configuration.
 - **Token revalidation for long-lived connections**: the gateway only authenticates the handshake — a connection could otherwise outlive its credentials indefinitely. A background job re-asks `auth` (over gRPC) whether each connection's token is still valid every N minutes, and closes stale ones with application close code **4401** (see [Token Revalidation](#token-revalidation)).
+- **Prometheus metrics** (`/metrics`): a client-side interceptor counts every outgoing gRPC call in `grpc_requests_total{method,code}` — the first metrics endpoint this service exposes.
 
 ---
 
@@ -105,6 +106,8 @@ The gateway authenticates the WebSocket **handshake**, but a connection can stay
 - **Fail closed** on missing tokens: a connection with no captured token never passed the gateway (it dialed the service directly) and is closed without asking `auth`.
 
 The worst-case lifetime of a stale connection is `token expiry + revalidation interval` — tune `TOKEN_REVALIDATION_INTERVAL_MINUTES` to trade Redis/gRPC load against that window.
+
+**Instrumented on both ends**: a `UnaryClientInterceptor` increments `grpc_requests_total{method,code}` on broadcasting's own `/metrics`, mirroring the counter `auth` keeps on the server side of the same RPC — so a `ValidateToken` failure is visible from whichever service you're looking at.
 
 ---
 
