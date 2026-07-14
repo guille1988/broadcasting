@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"broadcasting/internal/domain/notification/actions"
+	"broadcasting/internal/infrastructure/middlewares"
 	"context"
 	"time"
 
@@ -19,14 +20,18 @@ type AuthClient struct {
 }
 
 /*
-NewAuthClient creates a lazily-connecting client: grpc.NewClient does not
+NewAuthClient creates a lazily connecting client: grpc.NewClient does not
 dial until the first RPC, so broadcasting starts fine while auth is still
 booting. Credentials are insecure because this is container-to-container
 traffic on the private network, the same trust zone as the plaintext Kafka
 and forward-auth HTTP traffic.
 */
 func NewAuthClient(address string, callTimeout time.Duration) (*AuthClient, error) {
-	conn, err := googlegrpc.NewClient(address, googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := googlegrpc.NewClient(
+		address,
+		googlegrpc.WithTransportCredentials(insecure.NewCredentials()),
+		googlegrpc.WithChainUnaryInterceptor(middlewares.GRPCPrometheusClient()),
+	)
 
 	if err != nil {
 		return nil, err
